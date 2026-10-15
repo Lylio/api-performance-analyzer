@@ -7,7 +7,11 @@ public record PerformanceSummary(
         long averageResponseTimeMs,
         long minResponseTimeMs,
         long maxResponseTimeMs,
-        double successRate
+        double successRate,
+        long p50ResponseTimeMs,
+        long p95ResponseTimeMs,
+        long p99ResponseTimeMs
 ) {
 }
+
 

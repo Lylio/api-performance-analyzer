@@ -11,9 +11,19 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 
 @Service
 public class PerformanceService {
+
+
+    private final PercentileCalculator percentileCalculator;
+
+    public PerformanceService(PercentileCalculator percentileCalculator) {
+        this.percentileCalculator = percentileCalculator;
+    }
+
 
     public PerformanceResult measureResponseTime(String url)
             throws IOException, InterruptedException {
@@ -58,6 +68,7 @@ public class PerformanceService {
         }
     }
 
+
     public PerformanceSummary analyzePerformance(
             String url,
             int requestCount
@@ -69,30 +80,41 @@ public class PerformanceService {
             );
         }
 
-        long totalTime = 0;
-        long minTime = Long.MAX_VALUE;
-        long maxTime = Long.MIN_VALUE;
+        List<Long> responseTimes = new ArrayList<>();
         int successfulRequests = 0;
 
         for (int i = 0; i < requestCount; i++) {
 
             PerformanceResult result = measureResponseTime(url);
 
-            long responseTime = result.responseTimeMs();
-
-            totalTime += responseTime;
-            minTime = Math.min(minTime, responseTime);
-            maxTime = Math.max(maxTime, responseTime);
+            responseTimes.add(result.responseTimeMs());
 
             if (result.success()) {
                 successfulRequests++;
             }
         }
 
+        responseTimes.sort(Long::compareTo);
+
+        long totalTime = 0;
+
+        for (long time : responseTimes) {
+            totalTime += time;
+        }
+
         long averageTime = totalTime / requestCount;
+
+        long minTime = responseTimes.get(0);
+        long maxTime = responseTimes.get(requestCount - 1);
 
         double successRate =
                 (successfulRequests * 100.0) / requestCount;
+
+
+        long p50 = percentileCalculator.calculate(responseTimes, 50);
+        long p95 = percentileCalculator.calculate(responseTimes, 95);
+        long p99 = percentileCalculator.calculate(responseTimes, 99);
+
 
         return new PerformanceSummary(
                 url,
@@ -100,7 +122,10 @@ public class PerformanceService {
                 averageTime,
                 minTime,
                 maxTime,
-                successRate
+                successRate,
+                p50,
+                p95,
+                p99
         );
     }
 
