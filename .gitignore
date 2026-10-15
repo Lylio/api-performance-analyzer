@@ -11,3 +11,8 @@ Thumbs.db
 
 # Log files
 *.log
+
+# Frontend dependencies and generated output
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo

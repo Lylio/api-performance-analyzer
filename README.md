@@ -69,3 +69,36 @@ The suite includes Spring context loading, existing percentile and validation te
 Concurrency tests synchronize the first wave of requests at the server to prove actual overlap and check peak activity against limits of 1, 3, and 10. Additional tests cover sequential execution, virtual-thread use, throughput interval consistency, non-2xx responses, refused connections, redirects, and rejected URLs and request counts.
 
 The tool is intended for small controlled measurements. It has no global admission limit across simultaneous API callers, distributed load generation, retries, or per-request error lists in batch responses.
+
+## Milestone 5: monitoring dashboard
+
+The `frontend/` application uses React, TypeScript, Vite and Recharts with a responsive dark interface and lightweight custom CSS. Requires Node.js 22.12+ (or Node.js 24 LTS) and npm. Run both applications in separate terminals:
+
+```sh
+# Terminal 1, from the repository root (JDK 21)
+mvn spring-boot:run
+
+# Terminal 2, from the repository root
+cd frontend
+npm ci
+npm run dev
+```
+
+Open the local URL printed by Vite (normally `http://localhost:5173`). Vite forwards `/api` to Spring Boot at `http://localhost:8080`; no CORS changes are needed. Keep the backend running while using the dashboard.
+
+Select Single Request, Sequential or Concurrent, configure the enabled controls, and click **Run Test**. The target defaults to the exact approved URL above; frontend and backend both enforce the URL and applicable integer limits. The dashboard displays loading feedback, HTTP/transport failures, API Problem Details and network errors. A completed batch with failed attempts remains a completed result with its aggregate success rate.
+
+Metric cards reflect the selected history entry. Single requests use their observed latency for average/minimum/maximum and their success flag for success rate; their HTTP status is also displayed. P50/P95/P99 are available only for batches. Throughput and execution time are available only for concurrent tests; unavailable values display `—`. Charts use supplied aggregate statistics, never synthetic per-request samples or timing estimates. The comparison chart shows the latest ten runs; all completed runs remain selectable in the session history. Compare similar request counts and modes for meaningful conclusions. History is in React memory and resets on refresh; no database or browser persistence is used.
+
+```sh
+# Frontend checks, from frontend/
+npm test
+npm run build
+
+# Backend checks, from the repository root
+mvn clean test
+```
+
+Frontend tests cover endpoint/query contracts, validation, failure handling, loading feedback and history selection. Backend tests continue to use local fixtures. The frontend build writes static assets to `frontend/dist/`. `npm run preview` serves those built assets locally and forwards `/api` to the backend on port 8080. Production hosting must route `/api` to the backend on the same origin. This milestone adds no deployment infrastructure.
+
+Tests are on demand, with no streaming progress, polling or automatic retries. A sequential batch can take several minutes if attempts time out. Controls stay locked until the API completes; the dashboard does not offer cancellation because stopping a browser request would not guarantee cancellation of backend work. Batch DTOs do not expose individual request errors or samples. Google Fonts are optional; system fonts provide a fallback when offline.
