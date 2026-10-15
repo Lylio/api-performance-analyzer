@@ -1,0 +1,71 @@
+# API Performance Analyzer
+
+A Java 21 / Spring Boot application for measuring HTTP response latency through single requests, sequential batches, and bounded concurrent batches. Concurrent execution uses Java 21 virtual threads.
+
+## Running locally
+
+Requires JDK 21 and Maven (or the included Maven wrapper).
+
+```sh
+mvn spring-boot:run
+```
+
+The API listens on `http://localhost:8080` by default.
+
+Production requests accept exactly `https://jsonplaceholder.typicode.com/posts`. Alternate hosts, paths, query strings, and trailing slashes are rejected. Redirects are never followed. Batches accept 1–100 requests and concurrent batches accept a concurrency level of 1–10. The concurrency cap applies separately to each analysis invocation.
+
+## Endpoints
+
+All endpoints use GET and are relative to `/api/performance`.
+
+| Endpoint | Query parameters | Result |
+| --- | --- | --- |
+| `/test` | `url` | One HTTP request result |
+| `/analyze` | `url`, `requestCount` | Sequential latency summary |
+| `/concurrent` | `url`, `requestCount`, `concurrencyLevel` | Concurrent latency summary and throughput |
+
+```sh
+curl --get 'http://localhost:8080/api/performance/test' \
+  --data-urlencode 'url=https://jsonplaceholder.typicode.com/posts'
+
+curl --get 'http://localhost:8080/api/performance/analyze' \
+  --data-urlencode 'url=https://jsonplaceholder.typicode.com/posts' \
+  --data 'requestCount=10'
+
+curl --get 'http://localhost:8080/api/performance/concurrent' \
+  --data-urlencode 'url=https://jsonplaceholder.typicode.com/posts' \
+  --data 'requestCount=20' --data 'concurrencyLevel=5'
+```
+
+A single result contains `url`, `statusCode`, `responseTimeMs`, and `success`. A sequential summary contains `url`, `totalRequests`, `averageResponseTimeMs`, `minResponseTimeMs`, `maxResponseTimeMs`, `successRate`, `p50ResponseTimeMs`, `p95ResponseTimeMs`, and `p99ResponseTimeMs`. Concurrent summaries retain all these fields and add `concurrencyLevel`, `totalExecutionTimeMs`, and `throughputRequestsPerSecond`.
+
+HTTP 2xx responses are successful. Other HTTP statuses are preserved and counted as failures. Connection errors, timeouts, and other transport I/O failures produce `statusCode: 0` and `success: false`; the reason is logged on the server. A failed request does not abort its batch. Summaries include every attempt in latency statistics and success-rate calculations. Their existing schema exposes aggregate success rate rather than individual error details.
+
+Invalid URL or range parameters return HTTP 400 with a Problem Detail response. Interrupted analyses return HTTP 503; unexpected concurrent execution failures return HTTP 500. Outstanding tasks are cancelled when concurrent collection fails or is interrupted.
+
+## Architecture and measurements
+
+- `PerformanceController` delegates REST requests through constructor injection.
+- `PerformanceService` enforces the fixed URL allowlist and request limits, measures attempts, and calculates summaries.
+- `HttpRequestExecutor` owns a reusable JDK HTTP client. It executes GET requests, discards response bodies, disables redirects, and sets a 10-second connection timeout and a 10-second request timeout. Spring closes the client on shutdown.
+- Concurrent batches submit one virtual-thread task per request. A semaphore bounds active HTTP executions to the requested concurrency level and releases permits on all completion paths.
+- `PercentileCalculator` retains the nearest-rank calculation: sort ascending and select `ceil(percentile / 100 × count) - 1`.
+- `PerformanceExceptionHandler` maps validation and analysis exceptions to HTTP Problem Details.
+
+Measurements use monotonic `System.nanoTime()`. Each attempt is timed immediately around transport execution, including failed attempts and body consumption, excluding semaphore waiting. Both sequential and concurrent latency statistics use these same attempt intervals. Millisecond values and arithmetic averages truncate fractional milliseconds, preserving the existing response format.
+
+Concurrent total execution time covers task scheduling through executor completion. Throughput is attempted requests divided by this same wall-clock interval in seconds, using nanosecond precision before rounding. It includes failures and differs from the sum of individual request durations because requests overlap. These are application-observed timings, not isolated network or server processing times; connection reuse and JVM warm-up can affect results.
+
+## Tests
+
+```sh
+mvn clean test
+# Alternatively:
+./mvnw clean test
+```
+
+The suite includes Spring context loading, existing percentile and validation tests, REST contract checks, and integration tests using the JDK's loopback HTTP server. A test-only transport maps the approved URL to the local server without changing production validation. No automated test sends an external HTTP request.
+
+Concurrency tests synchronize the first wave of requests at the server to prove actual overlap and check peak activity against limits of 1, 3, and 10. Additional tests cover sequential execution, virtual-thread use, throughput interval consistency, non-2xx responses, refused connections, redirects, and rejected URLs and request counts.
+
+The tool is intended for small controlled measurements. It has no global admission limit across simultaneous API callers, distributed load generation, retries, or per-request error lists in batch responses.

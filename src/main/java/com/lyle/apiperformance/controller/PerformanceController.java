@@ -7,6 +7,8 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import com.lyle.apiperformance.dto.PerformanceSummary;
+import com.lyle.apiperformance.dto.ConcurrentPerformanceSummary;
+import java.util.concurrent.ExecutionException;
 
 import java.io.IOException;
 
@@ -38,5 +40,19 @@ public class PerformanceController {
         return performanceService.analyzePerformance(url, requestCount);
     }
 
+
+    @GetMapping("/concurrent")
+    public ConcurrentPerformanceSummary concurrent(
+            @RequestParam String url,
+            @RequestParam int requestCount,
+            @RequestParam int concurrencyLevel
+    ) throws InterruptedException, ExecutionException {
+
+        return performanceService.analyzeConcurrently(
+                url,
+                requestCount,
+                concurrencyLevel
+        );
+    }
 
 }

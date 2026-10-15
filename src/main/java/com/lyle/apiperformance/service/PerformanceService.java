@@ -3,69 +3,63 @@ package com.lyle.apiperformance.service;
 
 import com.lyle.apiperformance.dto.PerformanceSummary;
 import com.lyle.apiperformance.dto.PerformanceResult;
+import com.lyle.apiperformance.dto.ConcurrentPerformanceSummary;
 import org.springframework.stereotype.Service;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Semaphore;
 
 @Service
 public class PerformanceService {
+    private static final Logger log = LoggerFactory.getLogger(PerformanceService.class);
 
 
     private final PercentileCalculator percentileCalculator;
 
-    public PerformanceService(PercentileCalculator percentileCalculator) {
+    private final HttpRequestExecutor httpExecutor;
+
+    public PerformanceService(PercentileCalculator percentileCalculator,
+                              HttpRequestExecutor httpExecutor) {
         this.percentileCalculator = percentileCalculator;
+        this.httpExecutor = httpExecutor;
     }
 
 
     public PerformanceResult measureResponseTime(String url)
             throws IOException, InterruptedException {
 
-        if (!url.equals("https://jsonplaceholder.typicode.com/posts")) {
+        validateUrl(url);
+        return executeRequest(url);
+    }
+
+    private void validateUrl(String url) {
+        if (!"https://jsonplaceholder.typicode.com/posts".equals(url)) {
             throw new IllegalArgumentException(
-                    "Only the approved test endpoint is currently allowed"
-            );
+                    "Only the approved test endpoint is allowed");
         }
+    }
 
-        try (HttpClient client = HttpClient.newHttpClient()) {
-
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(url))
-                    .timeout(Duration.ofSeconds(10))
-                    .GET()
-                    .build();
-
-            long startTime = System.nanoTime();
-
-            HttpResponse<Void> response = client.send(
-                    request,
-                    HttpResponse.BodyHandlers.discarding()
-            );
-
-            long endTime = System.nanoTime();
-
-            long responseTimeMs =
-                    (endTime - startTime) / 1_000_000;
-
-            int statusCode = response.statusCode();
-
-            boolean success =
-                    statusCode >= 200 && statusCode < 300;
-
-            return new PerformanceResult(
-                    url,
-                    statusCode,
-                    responseTimeMs,
-                    success
-            );
+    private PerformanceResult executeRequest(String url) throws InterruptedException {
+        long start = System.nanoTime();
+        int statusCode;
+        try {
+            statusCode = httpExecutor.execute(url);
+        } catch (IOException exception) {
+            log.warn("HTTP request failed for {}: {}", url, exception.toString());
+            // No HTTP response was received; retain the existing result schema.
+            statusCode = 0;
         }
+        long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+        return new PerformanceResult(url, statusCode, elapsedMs,
+                statusCode >= 200 && statusCode < 300);
     }
 
 
@@ -80,12 +74,14 @@ public class PerformanceService {
             );
         }
 
+        validateUrl(url);
+
         List<Long> responseTimes = new ArrayList<>();
         int successfulRequests = 0;
 
         for (int i = 0; i < requestCount; i++) {
 
-            PerformanceResult result = measureResponseTime(url);
+            PerformanceResult result = executeRequest(url);
 
             responseTimes.add(result.responseTimeMs());
 
@@ -128,5 +124,116 @@ public class PerformanceService {
                 p99
         );
     }
+
+
+    public ConcurrentPerformanceSummary analyzeConcurrently(
+            String url,
+            int requestCount,
+            int concurrencyLevel
+    ) throws InterruptedException, ExecutionException {
+
+        if (requestCount < 1 || requestCount > 100) {
+            throw new IllegalArgumentException(
+                    "Request count must be between 1 and 100"
+            );
+        }
+
+        if (concurrencyLevel < 1 || concurrencyLevel > 10) {
+            throw new IllegalArgumentException(
+                    "Concurrency level must be between 1 and 10"
+            );
+        }
+
+        validateUrl(url);
+
+        List<Long> responseTimes = new ArrayList<>();
+        int successfulRequests = 0;
+
+        Semaphore semaphore = new Semaphore(concurrencyLevel);
+
+        long startTime = System.nanoTime();
+
+        try (ExecutorService executor =
+                     Executors.newVirtualThreadPerTaskExecutor()) {
+
+            List<Future<PerformanceResult>> futures =
+                    new ArrayList<>();
+
+            for (int i = 0; i < requestCount; i++) {
+
+                futures.add(executor.submit(() -> {
+
+                    semaphore.acquire();
+
+                    try {
+                        return executeRequest(url);
+                    } finally {
+                        semaphore.release();
+                    }
+                }));
+            }
+
+            try {
+                for (Future<PerformanceResult> future : futures) {
+
+                    PerformanceResult result = future.get();
+
+                    responseTimes.add(result.responseTimeMs());
+
+                    if (result.success()) {
+                        successfulRequests++;
+                    }
+                }
+            } catch (InterruptedException | ExecutionException exception) {
+                futures.forEach(future -> future.cancel(true));
+                throw exception;
+            }
+        }
+
+        long elapsedNanos = System.nanoTime() - startTime;
+
+        long totalExecutionTimeMs =
+                elapsedNanos / 1_000_000;
+
+        responseTimes.sort(Long::compareTo);
+
+        long totalResponseTime = 0;
+
+        for (long time : responseTimes) {
+            totalResponseTime += time;
+        }
+
+        long averageTime = totalResponseTime / requestCount;
+
+        long minTime = responseTimes.get(0);
+        long maxTime = responseTimes.get(requestCount - 1);
+
+        double successRate =
+                (successfulRequests * 100.0) / requestCount;
+
+        double throughput =
+                requestCount * 1_000_000_000.0
+                        / Math.max(1L, elapsedNanos);
+
+        long p50 = percentileCalculator.calculate(responseTimes, 50);
+        long p95 = percentileCalculator.calculate(responseTimes, 95);
+        long p99 = percentileCalculator.calculate(responseTimes, 99);
+
+        return new ConcurrentPerformanceSummary(
+                url,
+                requestCount,
+                concurrencyLevel,
+                totalExecutionTimeMs,
+                throughput,
+                averageTime,
+                minTime,
+                maxTime,
+                successRate,
+                p50,
+                p95,
+                p99
+        );
+    }
+
 
 }
