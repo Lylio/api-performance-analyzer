@@ -2,6 +2,11 @@
 
 A Java 21 / Spring Boot application for measuring HTTP response latency through single requests, sequential batches, and bounded concurrent batches. Concurrent execution uses Java 21 virtual threads.
 
+## Dashboard Preview
+
+<img width="2532" height="1127" alt="image" src="https://github.com/user-attachments/assets/ac13e376-8145-440c-9d9a-b23d8387a1b5" />
+
+
 ## Running locally
 
 Requires JDK 21 and Maven (or the included Maven wrapper).
