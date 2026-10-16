@@ -40,8 +40,7 @@ export interface Run {
   result: SingleResult | Summary | ConcurrentSummary;
 }
 export function validate(config: TestConfig): string | undefined {
-  if (config.url !== APPROVED_URL)
-    return "Use the exact approved target URL shown below.";
+  if (!config.url) return "Select an approved target URL.";
   if (
     config.mode !== "single" &&
     (!Number.isInteger(config.requestCount) ||
@@ -139,4 +138,26 @@ export function metrics(result: Run["result"]) {
     success: result.successRate,
     count: result.totalRequests,
   };
+}
+
+export async function loadTargets(): Promise<string[]> {
+  let response: Response;
+  try {
+    response = await fetch("/api/performance/targets");
+  } catch {
+    throw new Error(
+      "Cannot load approved targets. Check that Spring Boot is running, then reload.",
+    );
+  }
+  const body = await response.json().catch(() => null);
+  if (
+    !response.ok ||
+    !Array.isArray(body) ||
+    !body.length ||
+    !body.every((url) => typeof url === "string" && url.length > 0)
+  )
+    throw new Error(
+      body?.detail || "Cannot load approved targets. Reload to retry.",
+    );
+  return body;
 }

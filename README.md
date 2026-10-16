@@ -12,7 +12,7 @@ mvn spring-boot:run
 
 The API listens on `http://localhost:8080` by default.
 
-Production requests accept exactly `https://jsonplaceholder.typicode.com/posts`. Alternate hosts, paths, query strings, and trailing slashes are rejected. Redirects are never followed. Batches accept 1–100 requests and concurrent batches accept a concurrency level of 1–10. The concurrency cap applies separately to each analysis invocation.
+The approved target list defaults to `https://jsonplaceholder.typicode.com/posts` and is configured by the backend. Only exact normalized targets are accepted; alternate paths, ports, query strings and trailing slashes require separate approvals. Redirects are never followed. Batches accept 1–100 requests and concurrent batches accept a concurrency level of 1–10. The concurrency cap applies separately to each analysis invocation.
 
 ## Endpoints
 
@@ -20,6 +20,7 @@ All endpoints use GET and are relative to `/api/performance`.
 
 | Endpoint | Query parameters | Result |
 | --- | --- | --- |
+| `/targets` | None | Approved target URL array |
 | `/test` | `url` | One HTTP request result |
 | `/analyze` | `url`, `requestCount` | Sequential latency summary |
 | `/concurrent` | `url`, `requestCount`, `concurrencyLevel` | Concurrent latency summary and throughput |
@@ -46,8 +47,8 @@ Invalid URL or range parameters return HTTP 400 with a Problem Detail response. 
 ## Architecture and measurements
 
 - `PerformanceController` delegates REST requests through constructor injection.
-- `PerformanceService` enforces the fixed URL allowlist and request limits, measures attempts, and calculates summaries.
-- `HttpRequestExecutor` owns a reusable JDK HTTP client. It executes GET requests, discards response bodies, disables redirects, and sets a 10-second connection timeout and a 10-second request timeout. Spring closes the client on shutdown.
+- `TargetValidator` enforces the configured exact URL allowlist; `PerformanceService` enforces request limits, measures attempts, and calculates summaries.
+- `HttpRequestExecutor` owns a reusable Apache HTTP client with a pinned DNS resolver. It executes GET requests, discards response bodies, disables redirects, and sets 10-second connection, pool acquisition and response inactivity timeouts. The connection pool holds at most 100 connections, including at most 100 per route; concurrent analyses may wait for pool capacity. Spring closes the client on shutdown.
 - Concurrent batches submit one virtual-thread task per request. A semaphore bounds active HTTP executions to the requested concurrency level and releases permits on all completion paths.
 - `PercentileCalculator` retains the nearest-rank calculation: sort ascending and select `ceil(percentile / 100 × count) - 1`.
 - `PerformanceExceptionHandler` maps validation and analysis exceptions to HTTP Problem Details.
@@ -64,7 +65,7 @@ mvn clean test
 ./mvnw clean test
 ```
 
-The suite includes Spring context loading, existing percentile and validation tests, REST contract checks, and integration tests using the JDK's loopback HTTP server. A test-only transport maps the approved URL to the local server without changing production validation. No automated test sends an external HTTP request.
+The suite includes Spring context loading, existing percentile and validation tests, REST contract checks, and integration tests using the JDK's loopback HTTP server. Integration tests explicitly approve their dynamically allocated loopback server URL. No automated test sends an external HTTP request.
 
 Concurrency tests synchronize the first wave of requests at the server to prove actual overlap and check peak activity against limits of 1, 3, and 10. Additional tests cover sequential execution, virtual-thread use, throughput interval consistency, non-2xx responses, refused connections, redirects, and rejected URLs and request counts.
 
@@ -86,7 +87,7 @@ npm run dev
 
 Open the local URL printed by Vite (normally `http://localhost:5173`). Vite forwards `/api` to Spring Boot at `http://localhost:8080`; no CORS changes are needed. Keep the backend running while using the dashboard.
 
-Select Single Request, Sequential or Concurrent, configure the enabled controls, and click **Run Test**. The target defaults to the exact approved URL above; frontend and backend both enforce the URL and applicable integer limits. The dashboard displays loading feedback, HTTP/transport failures, API Problem Details and network errors. A completed batch with failed attempts remains a completed result with its aggregate success rate.
+Select Single Request, Sequential or Concurrent, configure the enabled controls, and click **Run Test**. The target selector loads approved URLs from `/api/performance/targets` and remains disabled if loading fails. The backend authorizes every request; the frontend checks applicable integer limits. The dashboard displays loading feedback, HTTP/transport failures, API Problem Details and network errors. A completed batch with failed attempts remains a completed result with its aggregate success rate.
 
 Metric cards reflect the selected history entry. Single requests use their observed latency for average/minimum/maximum and their success flag for success rate; their HTTP status is also displayed. P50/P95/P99 are available only for batches. Throughput and execution time are available only for concurrent tests; unavailable values display `—`. Charts use supplied aggregate statistics, never synthetic per-request samples or timing estimates. The comparison chart shows the latest ten runs; all completed runs remain selectable in the session history. Compare similar request counts and modes for meaningful conclusions. History is in React memory and resets on refresh; no database or browser persistence is used.
 
@@ -102,3 +103,33 @@ mvn clean test
 Frontend tests cover endpoint/query contracts, validation, failure handling, loading feedback and history selection. Backend tests continue to use local fixtures. The frontend build writes static assets to `frontend/dist/`. `npm run preview` serves those built assets locally and forwards `/api` to the backend on port 8080. Production hosting must route `/api` to the backend on the same origin. This milestone adds no deployment infrastructure.
 
 Tests are on demand, with no streaming progress, polling or automatic retries. A sequential batch can take several minutes if attempts time out. Controls stay locked until the API completes; the dashboard does not offer cancellation because stopping a browser request would not guarantee cancellation of backend work. Batch DTOs do not expose individual request errors or samples. Google Fonts are optional; system fonts provide a fallback when offline.
+
+## Milestone 6A: configurable local API testing
+
+Start a separate Spring Boot application with Actuator on port 8081 (for example, `java -jar local-api.jar --server.port=8081`). Approve its health endpoint when starting Pulse:
+
+```sh
+PULSE_APPROVED_TARGETS='https://jsonplaceholder.typicode.com/posts,http://localhost:8081/actuator/health' mvn spring-boot:run
+```
+
+Alternatively, set the Spring property in `application.properties` or a profile-specific configuration file:
+
+```properties
+pulse.approved-targets=https://jsonplaceholder.typicode.com/posts,http://localhost:8081/actuator/health
+```
+
+The environment variable overrides the entire comma-separated list. Include JSONPlaceholder to retain it when overriding. Restart Pulse after configuration changes. Values must be exact HTTP(S) URLs; this comma-delimited configuration does not support literal commas inside URLs (use percent encoding where appropriate).
+
+Select the local endpoint in the dashboard, or benchmark it directly:
+
+```sh
+curl --get 'http://localhost:8080/api/performance/concurrent' \
+  --data-urlencode 'url=http://localhost:8081/actuator/health' \
+  --data 'requestCount=20' --data 'concurrencyLevel=5'
+```
+
+Authorization normalizes scheme and host case, default ports, empty paths to `/`, and dot path segments. Paths and raw query strings remain case sensitive; query order and encoding are significant. Credentials, fragments, unsupported schemes and malformed URLs are rejected, including in configuration. GET-only behavior, result fields, request limits (1–100) and concurrency limits (1–10) are unchanged. Redirect responses remain unsuccessful 3xx results; their destinations are never requested, even if separately approved.
+
+DNS names resolve once on first use and retain the same addresses for the transport lifetime, including reconnects. The HTTP client connects through that resolver, preserving the original hostname for TLS certificate verification and SNI. This requires Apache HttpClient rather than the JDK client's non-configurable resolver. Named hosts resolving to private, loopback, link-local, multicast, unique-local or shared carrier addresses are rejected as transport failures (`statusCode: 0`). `localhost` is fixed to IPv4 loopback. To test another private destination, explicitly approve its exact IP URL (for example `http://192.168.1.20:8081/actuator/health`); internal DNS aliases are intentionally unsupported. No wildcard hosts, subnet permissions, redirects, automatic retries, cookies or system proxies are enabled.
+
+Configuration is trusted operator input: approving a private IP explicitly grants access to that exact endpoint. Use this tool within a trusted development environment; it has no authentication or global load cap. DNS pinning intentionally prevents automatic DNS failover until restart. Network routing, NAT and changes to a service at an approved IP remain outside URL authorization. HTTPS endpoints still require certificates trusted by the JVM. Timeouts bound connection acquisition, connection establishment and response inactivity; they are not a total batch deadline.

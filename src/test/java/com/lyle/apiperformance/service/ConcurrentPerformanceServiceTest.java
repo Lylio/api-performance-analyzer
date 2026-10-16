@@ -14,9 +14,10 @@ class ConcurrentPerformanceServiceTest {
 
     @BeforeEach
     void setUp() {
-        transport = new HttpRequestExecutor();
+        var validator = new TargetValidator(java.util.List.of("https://jsonplaceholder.typicode.com/posts"));
+        transport = new HttpRequestExecutor(validator);
         performanceService = new PerformanceService(
-                new PercentileCalculator(), transport
+                new PercentileCalculator(), transport, validator
         );
     }
 

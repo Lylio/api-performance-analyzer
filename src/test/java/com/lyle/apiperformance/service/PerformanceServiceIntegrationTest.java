@@ -24,7 +24,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.*;
 
 class PerformanceServiceIntegrationTest {
-    private static final String APPROVED = "https://jsonplaceholder.typicode.com/posts";
+    private String APPROVED;
     private HttpServer server;
     private ExecutorService serverExecutor;
     private HttpRequestExecutor transport;
@@ -61,15 +61,16 @@ class PerformanceServiceIntegrationTest {
         });
         server.start();
         String localUrl = "http://127.0.0.1:" + server.getAddress().getPort() + "/";
-        // Rewrite only inside the test transport; the service still validates APPROVED.
-        transport = new HttpRequestExecutor() {
+        APPROVED = localUrl;
+        var validator = new TargetValidator(java.util.List.of(localUrl));
+        transport = new HttpRequestExecutor(validator) {
             @Override
             public int execute(String url) throws IOException, InterruptedException {
                 virtualThreads.compareAndSet(true, Thread.currentThread().isVirtual());
-                return super.execute(localUrl);
+                return super.execute(url);
             }
         };
-        service = new PerformanceService(new PercentileCalculator(), transport);
+        service = new PerformanceService(new PercentileCalculator(), transport, validator);
     }
 
     @AfterEach
@@ -133,8 +134,8 @@ class PerformanceServiceIntegrationTest {
     }
 
     @Test
-    void allEntryPointsRejectLocalAndNullUrlsBeforeTransport() {
-        for (String url : new String[]{"http://127.0.0.1", null, APPROVED + "/"}) {
+    void allEntryPointsRejectUnapprovedAndNullUrlsBeforeTransport() {
+        for (String url : new String[]{"http://127.0.0.1", null, APPROVED + "other"}) {
             assertThrows(IllegalArgumentException.class, () -> service.measureResponseTime(url));
             assertThrows(IllegalArgumentException.class, () -> service.analyzePerformance(url, 2));
             assertThrows(IllegalArgumentException.class, () -> service.analyzeConcurrently(url, 2, 2));
@@ -155,6 +156,8 @@ class PerformanceServiceIntegrationTest {
     void restEndpointsKeepResponseFieldsAndReturnBadRequestForInvalidInput() throws Exception {
         var mvc = MockMvcBuilders.standaloneSetup(new PerformanceController(service))
                 .setControllerAdvice(new PerformanceExceptionHandler()).build();
+        mvc.perform(get("/api/performance/targets"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$[0]").value(APPROVED));
         mvc.perform(get("/api/performance/test").param("url", APPROVED))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.url").value(APPROVED))
@@ -181,7 +184,7 @@ class PerformanceServiceIntegrationTest {
         }
         mvc.perform(get("/api/performance/test").param("url", "http://localhost"))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.detail").value("Only the approved test endpoint is allowed"));
+                .andExpect(jsonPath("$.detail").value("Only an explicitly approved target URL is allowed"));
         mvc.perform(get("/api/performance/concurrent").param("url", APPROVED)
                 .param("requestCount", "101").param("concurrencyLevel", "2"))
                 .andExpect(status().isBadRequest());
@@ -196,7 +199,9 @@ class PerformanceServiceIntegrationTest {
             exchange.sendResponseHeaders(302, -1);
             exchange.close();
         });
-        assertEquals(302, service.measureResponseTime(APPROVED).statusCode());
+        var result = service.measureResponseTime(APPROVED);
+        assertEquals(302, result.statusCode());
+        assertFalse(result.success());
         assertEquals(1, calls.get());
     }
 }

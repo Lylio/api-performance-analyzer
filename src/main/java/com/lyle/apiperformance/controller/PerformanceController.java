@@ -23,6 +23,11 @@ public class PerformanceController {
     }
 
 
+    @GetMapping("/targets")
+    public java.util.List<String> targets() {
+        return performanceService.approvedTargets();
+    }
+
     @GetMapping("/test")
     public PerformanceResult test(@RequestParam String url)
             throws IOException, InterruptedException {

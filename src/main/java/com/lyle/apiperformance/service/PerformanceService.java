@@ -25,26 +25,25 @@ public class PerformanceService {
     private final PercentileCalculator percentileCalculator;
 
     private final HttpRequestExecutor httpExecutor;
+    private final TargetValidator targetValidator;
 
     public PerformanceService(PercentileCalculator percentileCalculator,
-                              HttpRequestExecutor httpExecutor) {
+                              HttpRequestExecutor httpExecutor, TargetValidator targetValidator) {
         this.percentileCalculator = percentileCalculator;
         this.httpExecutor = httpExecutor;
+        this.targetValidator = targetValidator;
     }
 
 
     public PerformanceResult measureResponseTime(String url)
             throws IOException, InterruptedException {
 
-        validateUrl(url);
+        targetValidator.validate(url);
         return executeRequest(url);
     }
 
-    private void validateUrl(String url) {
-        if (!"https://jsonplaceholder.typicode.com/posts".equals(url)) {
-            throw new IllegalArgumentException(
-                    "Only the approved test endpoint is allowed");
-        }
+    public List<String> approvedTargets() {
+        return targetValidator.approvedTargets();
     }
 
     private PerformanceResult executeRequest(String url) throws InterruptedException {
@@ -74,7 +73,7 @@ public class PerformanceService {
             );
         }
 
-        validateUrl(url);
+        targetValidator.validate(url);
 
         List<Long> responseTimes = new ArrayList<>();
         int successfulRequests = 0;
@@ -144,7 +143,7 @@ public class PerformanceService {
             );
         }
 
-        validateUrl(url);
+        targetValidator.validate(url);
 
         List<Long> responseTimes = new ArrayList<>();
         int successfulRequests = 0;

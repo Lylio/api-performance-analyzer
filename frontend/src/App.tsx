@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Activity,
   ArrowDown,
@@ -23,7 +23,7 @@ import {
   YAxis,
 } from "recharts";
 import {
-  APPROVED_URL,
+  loadTargets,
   metrics,
   modeLabels,
   runTest,
@@ -115,11 +115,28 @@ function PercentileChart({ run }: { run: Run }) {
 }
 export default function App() {
   const [config, setConfig] = useState<TestConfig>({
-    url: APPROVED_URL,
+    url: "",
     mode: "concurrent",
     requestCount: 20,
     concurrencyLevel: 5,
   });
+  const [targets, setTargets] = useState<string[]>([]);
+  useEffect(() => {
+    let active = true;
+    loadTargets()
+      .then((urls) => {
+        if (active) {
+          setTargets(urls);
+          setConfig((previous) => ({ ...previous, url: urls[0] }));
+        }
+      })
+      .catch((cause) => {
+        if (active) setError(cause.message);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
   const [runs, setRuns] = useState<Run[]>([]);
   const [selected, setSelected] = useState<number>();
   const [busy, setBusy] = useState(false);
@@ -160,20 +177,18 @@ export default function App() {
       setBusy(false);
     }
   }
-  const comparison = runs
-    .slice(-10)
-    .map((run, index) => ({
-      name: `#${runs.length - Math.min(runs.length, 10) + index + 1}`,
-      Average: metrics(run.result).average,
-      P95:
-        "p95ResponseTimeMs" in run.result
-          ? run.result.p95ResponseTimeMs
-          : undefined,
-      P99:
-        "p99ResponseTimeMs" in run.result
-          ? run.result.p99ResponseTimeMs
-          : undefined,
-    }));
+  const comparison = runs.slice(-10).map((run, index) => ({
+    name: `#${runs.length - Math.min(runs.length, 10) + index + 1}`,
+    Average: metrics(run.result).average,
+    P95:
+      "p95ResponseTimeMs" in run.result
+        ? run.result.p95ResponseTimeMs
+        : undefined,
+    P99:
+      "p99ResponseTimeMs" in run.result
+        ? run.result.p99ResponseTimeMs
+        : undefined,
+  }));
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -233,19 +248,26 @@ export default function App() {
               <span className="step-label">01 / CONFIGURE</span>
             </div>
             <form onSubmit={submit}>
-              <fieldset disabled={busy}>
+              <fieldset disabled={busy || !targets.length}>
                 <div className="config-grid">
                   <label className="url-field">
                     Target URL
-                    <input
-                      type="url"
+                    <select
                       required
                       value={config.url}
                       onChange={(e) =>
                         setConfig({ ...config, url: e.target.value })
                       }
-                      spellCheck={false}
-                    />
+                    >
+                      {!targets.length && (
+                        <option value="">Loading approved targets…</option>
+                      )}
+                      {targets.map((url) => (
+                        <option key={url} value={url}>
+                          {url}
+                        </option>
+                      ))}
+                    </select>
                     <span className="field-help">
                       Approved target only · GET request
                     </span>
@@ -330,7 +352,7 @@ export default function App() {
             {error && (
               <div className="error" role="alert">
                 {error}
-                <small>Approved URL: {APPROVED_URL}</small>
+                <small>Targets approved by the backend · GET only</small>
               </div>
             )}
             {busy && (

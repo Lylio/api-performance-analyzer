@@ -27,12 +27,10 @@ afterEach(() => vi.unstubAllGlobals());
 describe("validation and metrics", () => {
   it("enforces the exact URL and integer limits", () => {
     expect(validate(config)).toBeUndefined();
-    for (const url of [
-      APPROVED_URL + "/",
-      APPROVED_URL + "?x=1",
-      "https://example.com",
-    ])
-      expect(validate({ ...config, url })).toBeTruthy();
+    expect(validate({ ...config, url: "" })).toBeTruthy();
+    expect(
+      validate({ ...config, url: "http://localhost:8081/actuator/health" }),
+    ).toBeUndefined();
     for (const requestCount of [0, 101, 1.5, NaN])
       expect(validate({ ...config, requestCount })).toBeTruthy();
     for (const concurrencyLevel of [0, 11, 1.5, NaN])
@@ -106,13 +104,11 @@ describe("backend adapter", () => {
   it("surfaces problem details", async () => {
     vi.stubGlobal(
       "fetch",
-      vi
-        .fn()
-        .mockResolvedValue({
-          ok: false,
-          status: 400,
-          json: async () => ({ detail: "Rejected target URL" }),
-        }),
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 400,
+        json: async () => ({ detail: "Rejected target URL" }),
+      }),
     );
     await expect(runTest(config)).rejects.toThrow("Rejected target URL");
   });
@@ -141,4 +137,19 @@ describe("backend adapter", () => {
     );
     await expect(runTest(config)).rejects.toThrow("HTTP 502");
   });
+});
+
+it("loads approved targets and rejects unavailable or malformed lists", async () => {
+  const { loadTargets } = await import("./api");
+  const targets = ["http://localhost:8081/actuator/health"];
+  const fetchMock = vi
+    .fn()
+    .mockResolvedValue({ ok: true, json: async () => targets });
+  vi.stubGlobal("fetch", fetchMock);
+  expect(await loadTargets()).toEqual(targets);
+  expect(fetchMock).toHaveBeenCalledWith("/api/performance/targets");
+  fetchMock.mockResolvedValue({ ok: true, json: async () => [] });
+  await expect(loadTargets()).rejects.toThrow("Cannot load approved targets");
+  fetchMock.mockRejectedValue(new TypeError("offline"));
+  await expect(loadTargets()).rejects.toThrow("Cannot load approved targets");
 });
